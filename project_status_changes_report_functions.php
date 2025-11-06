@@ -26,6 +26,77 @@ function get_status_ids_including_children($status_id) {
 }
 
 /**
+ * Fetch parent project current data
+ * @param int $parent_id The parent project member ID
+ * @return array|null Parent project data or null if not found
+ */
+function fetch_parent_project_data($parent_id) {
+    if (!$parent_id) {
+        return null;
+    }
+
+    $proj_proj_manager_assoc = DimensionMemberAssociations::getAssociationByCode('project_project_manager');
+    if (!$proj_proj_manager_assoc instanceof DimensionMemberAssociation) {
+        return null;
+    }
+    $proj_manager_association_id = $proj_proj_manager_assoc->getId();
+
+    $contract_stage_assoc = DimensionMemberAssociations::getAssociationByCode('project_project_phase');
+    if (!$contract_stage_assoc instanceof DimensionMemberAssociation) {
+        return null;
+    }
+    $association_id = $contract_stage_assoc->getId();
+
+    // Fetch current parent data
+    $sql = "
+        SELECT
+            m.id AS member_id,
+            m.parent_member_id AS parent_id,
+            m.display_name AS project_name,
+            pm_member.display_name AS project_manager_name,
+            mt.estimated_overall_total_price AS estimated_price,
+            current_status.display_name AS current_phase_name,
+            current_status.id AS current_stage_id
+        FROM
+            " . TABLE_PREFIX . "members m
+        LEFT JOIN
+            " . TABLE_PREFIX . "member_property_members AS pm_prop ON pm_prop.association_id = " . DB::escape($proj_manager_association_id) . "
+            AND pm_prop.member_id = m.id
+        LEFT JOIN
+            " . TABLE_PREFIX . "members AS pm_member ON pm_member.id = pm_prop.property_member_id
+        LEFT JOIN
+            " . TABLE_PREFIX . "member_totals mt ON m.id = mt.member_id
+        LEFT JOIN
+            " . TABLE_PREFIX . "member_property_members AS status_prop ON status_prop.association_id = " . DB::escape($association_id) . "
+            AND status_prop.member_id = m.id
+        LEFT JOIN
+            " . TABLE_PREFIX . "members AS current_status ON current_status.id = status_prop.property_member_id
+        WHERE
+            m.id = " . DB::escape($parent_id) . "
+        LIMIT 1
+    ";
+
+    $row = DB::executeOne($sql);
+
+    if (!$row) {
+        return null;
+    }
+
+    return array(
+        'member_id' => $row['member_id'],
+        'parent_id' => $row['parent_id'],
+        'change_date' => '',  // No change date for parents shown for context
+        'project_name' => $row['project_name'],
+        'project_manager' => !empty($row['project_manager_name']) ? $row['project_manager_name'] : '--',
+        'previous_stage' => '--',  // No previous stage for context parents
+        'current_stage' => !empty($row['current_phase_name']) ? $row['current_phase_name'] : '--',
+        'estimated_price' => floatval(array_var($row, 'estimated_price', 0)),
+        'is_child' => false,
+        'is_context_parent' => true  // Flag to indicate this parent is shown for context
+    );
+}
+
+/**
  * Organize projects into hierarchical structure
  * @param array $projects Flat array of projects with parent_id
  * @return array Hierarchically organized projects (parents with children nested)
@@ -34,6 +105,7 @@ function organize_projects_hierarchy($projects) {
     $organized = array();
     $projects_by_id = array();
     $children_by_parent_id = array();
+    $processed_ids = array();
 
     // Index all projects by ID and group children
     foreach ($projects as $project) {
@@ -55,17 +127,59 @@ function organize_projects_hierarchy($projects) {
         $project_id = $project['member_id'];
         $parent_id = $project['parent_id'];
 
-        // Only process root-level projects here (no parent or parent not in result set)
-        if (!$parent_id || !isset($projects_by_id[$parent_id])) {
-            // Add the parent
+        // Skip if already processed
+        if (isset($processed_ids[$project_id])) {
+            continue;
+        }
+
+        // If this project is a child, ensure parent is displayed first
+        if ($parent_id) {
+            // Check if parent is already in organized list or processed
+            if (!isset($processed_ids[$parent_id])) {
+                // Parent not yet displayed
+                if (isset($projects_by_id[$parent_id])) {
+                    // Parent is in results, add it
+                    $organized[] = $projects_by_id[$parent_id];
+                } else {
+                    // Parent is NOT in results, fetch it for context
+                    $parent_data = fetch_parent_project_data($parent_id);
+                    if ($parent_data) {
+                        $organized[] = $parent_data;
+                    }
+                }
+                $processed_ids[$parent_id] = true;
+            }
+
+            // Now add the child
+            $project['is_child'] = true;
             $organized[] = $project;
+            $processed_ids[$project_id] = true;
+
+            // Also add any other children of the same parent
+            if (isset($children_by_parent_id[$parent_id])) {
+                foreach ($children_by_parent_id[$parent_id] as $sibling_id) {
+                    if ($sibling_id != $project_id && !isset($processed_ids[$sibling_id])) {
+                        $sibling = $projects_by_id[$sibling_id];
+                        $sibling['is_child'] = true;
+                        $organized[] = $sibling;
+                        $processed_ids[$sibling_id] = true;
+                    }
+                }
+            }
+        } else {
+            // Root-level project (no parent)
+            $organized[] = $project;
+            $processed_ids[$project_id] = true;
 
             // Add its children immediately after
             if (isset($children_by_parent_id[$project_id])) {
                 foreach ($children_by_parent_id[$project_id] as $child_id) {
-                    $child = $projects_by_id[$child_id];
-                    $child['is_child'] = true; // Mark as child for indentation
-                    $organized[] = $child;
+                    if (!isset($processed_ids[$child_id])) {
+                        $child = $projects_by_id[$child_id];
+                        $child['is_child'] = true;
+                        $organized[] = $child;
+                        $processed_ids[$child_id] = true;
+                    }
                 }
             }
         }

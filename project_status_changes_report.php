@@ -103,7 +103,13 @@ function render_table_header($columns) {
 function render_project_rows($projects, $columns, $currency_sym) {
     foreach($projects as $project) {
         $is_child = array_var($project, 'is_child', false);
+        $is_context_parent = array_var($project, 'is_context_parent', false);
         $row_class = $is_child ? 'childRow' : 'parentRow';
+
+        // Add special styling for context parents (shown for reference)
+        if ($is_context_parent) {
+            $row_class .= ' contextParent';
+        }
 
         echo '<tr class="'.$row_class.'">';
 
@@ -116,16 +122,23 @@ function render_project_rows($projects, $columns, $currency_sym) {
             $field = $col['field'];
             $value = array_var($project, $field, '');
 
-            // Format the value
-            $formatted = format_report_cell_value($value, $col['type'], $currency_sym);
+            // For context parents, show empty change_date as '--'
+            if ($is_context_parent && $field == 'change_date' && empty($value)) {
+                $cell_content = '--';
+                $align_class = 'left';
+            } else {
+                // Format the value
+                $formatted = format_report_cell_value($value, $col['type'], $currency_sym);
+                $cell_content = $formatted['value'];
+                $align_class = $formatted['align_class'];
+            }
 
             // Add indentation to first column for child projects
-            $cell_content = $formatted['value'];
             if ($is_first_column && $is_child) {
                 $cell_content = '<span style="margin-left: 20px; display: inline-block;">└─ ' . $cell_content . '</span>';
             }
 
-            echo '<td class="'.$formatted['align_class'].'">'.$cell_content.'</td>';
+            echo '<td class="'.$align_class.'">'.$cell_content.'</td>';
             $is_first_column = false;
         }
         echo '</tr>';
