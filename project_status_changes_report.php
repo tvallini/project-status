@@ -19,6 +19,36 @@ if ($from_status_name && $to_status_name) {
 }
 echo '<div class="clear"></div>';
 
+/**
+ * Format a cell value based on its type
+ * @param mixed $value The raw value
+ * @param string $type The column type (date, currency, string)
+ * @param string $currency_sym The currency symbol
+ * @return array Array with 'value' and 'align_class'
+ */
+function format_report_cell_value($value, $type, $currency_sym) {
+    $formatted = array(
+        'value' => $value,
+        'align_class' => 'left'
+    );
+
+    if ($type == 'date' && $value) {
+        $formatted['value'] = format_date(DateTimeValueLib::dateFromFormatAndString('Y-m-d H:i:s', $value));
+    } elseif ($type == 'currency') {
+        $formatted['value'] = format_money_amount($value, $currency_sym);
+        $formatted['align_class'] = 'right';
+    }
+
+    return $formatted;
+}
+
+/**
+ * Render the project status changes report table
+ * @param array $projects Hierarchically organized projects
+ * @param array $columns Column definitions
+ * @param array $totals Total counts
+ * @param array $report_data Report configuration
+ */
 function render_project_status_changes_report($projects, $columns, $totals, $report_data) {
     $is_pdf_export = array_var($report_data, 'is_pdf_export', false);
     $table_zoom = $is_pdf_export ? 'zoom: 0.8;' : '';
@@ -28,6 +58,31 @@ function render_project_status_changes_report($projects, $columns, $totals, $rep
     echo '<table class="budgetReport" style="width: 100%;'.$table_zoom.'">';
 
     // Render header
+    render_table_header($columns);
+
+    // Render data rows
+    echo '<tbody>';
+    if (empty($projects)) {
+        echo '<tr><td colspan="'.count($columns).'" class="center">'.lang('no results found').'</td></tr>';
+    } else {
+        render_project_rows($projects, $columns, $currency_sym);
+    }
+    echo '</tbody>';
+
+    // Render totals
+    if (!empty($projects)) {
+        render_table_totals($columns, $totals);
+    }
+
+    // Close table
+    echo '</table>';
+}
+
+/**
+ * Render table header row
+ * @param array $columns Column definitions
+ */
+function render_table_header($columns) {
     echo '<thead><tr>';
     foreach($columns as $col) {
         if (!is_array($col) || !isset($col['type']) || !isset($col['name'])) {
@@ -37,59 +92,67 @@ function render_project_status_changes_report($projects, $columns, $totals, $rep
         echo '<th class="'.$align_class.' bold header_1 min-80">'.$col['name'].'</th>';
     }
     echo '</tr></thead>';
+}
 
-    // Render data rows
-    echo '<tbody>';
-    if (empty($projects)) {
-        echo '<tr><td colspan="'.count($columns).'" class="center">'.lang('no results found').'</td></tr>';
-    } else {
-        foreach($projects as $project) {
-            echo '<tr class="parentRow">';
-            foreach($columns as $col) {
-                if (!is_array($col) || !isset($col['field']) || !isset($col['type'])) {
-                    continue;
-                }
-                $field = $col['field'];
-                $value = array_var($project, $field, '');
+/**
+ * Render project data rows with hierarchy
+ * @param array $projects Projects to render
+ * @param array $columns Column definitions
+ * @param string $currency_sym Currency symbol
+ */
+function render_project_rows($projects, $columns, $currency_sym) {
+    foreach($projects as $project) {
+        $is_child = array_var($project, 'is_child', false);
+        $row_class = $is_child ? 'childRow' : 'parentRow';
 
-                if ($col['type'] == 'date' && $value) {
-                    $value = format_date(DateTimeValueLib::dateFromFormatAndString('Y-m-d H:i:s', $value));
-                    $align_class = 'left';
-                } elseif ($col['type'] == 'currency') {
-                    $value = format_money_amount($value, $currency_sym);
-                    $align_class = 'right';
-                } else {
-                    $align_class = 'left';
-                }
+        echo '<tr class="'.$row_class.'">';
 
-                echo '<td class="'.$align_class.'">'.$value.'</td>';
-            }
-            echo '</tr>';
-        }
-    }
-    echo '</tbody>';
-
-    // Render totals
-    if (!empty($projects)) {
-        echo '<tbody><tr class="titles">';
-        $total_count = array_var($totals, 'total_count', 0);
-
+        $is_first_column = true;
         foreach($columns as $col) {
             if (!is_array($col) || !isset($col['field']) || !isset($col['type'])) {
                 continue;
             }
-            $field = $col['field'];
-            if ($field == 'change_date') {
-                echo '<td class="left header_0"><strong>'.lang('total count').': '.$total_count.'</strong></td>';
-            } else {
-                echo '<td class="left header_0"></td>';
-            }
-        }
-        echo '</tr></tbody>';
-    }
 
-    // Close table
-    echo '</table>';
+            $field = $col['field'];
+            $value = array_var($project, $field, '');
+
+            // Format the value
+            $formatted = format_report_cell_value($value, $col['type'], $currency_sym);
+
+            // Add indentation to first column for child projects
+            $cell_content = $formatted['value'];
+            if ($is_first_column && $is_child) {
+                $cell_content = '<span style="margin-left: 20px; display: inline-block;">└─ ' . $cell_content . '</span>';
+            }
+
+            echo '<td class="'.$formatted['align_class'].'">'.$cell_content.'</td>';
+            $is_first_column = false;
+        }
+        echo '</tr>';
+    }
+}
+
+/**
+ * Render totals row
+ * @param array $columns Column definitions
+ * @param array $totals Totals data
+ */
+function render_table_totals($columns, $totals) {
+    echo '<tbody><tr class="titles">';
+    $total_count = array_var($totals, 'total_count', 0);
+
+    foreach($columns as $col) {
+        if (!is_array($col) || !isset($col['field']) || !isset($col['type'])) {
+            continue;
+        }
+        $field = $col['field'];
+        if ($field == 'change_date') {
+            echo '<td class="left header_0"><strong>'.lang('total count').': '.$total_count.'</strong></td>';
+        } else {
+            echo '<td class="left header_0"></td>';
+        }
+    }
+    echo '</tr></tbody>';
 }
 
 render_project_status_changes_report($projects, $columns, $totals, $report_data);

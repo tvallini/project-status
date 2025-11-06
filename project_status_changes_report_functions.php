@@ -25,6 +25,55 @@ function get_status_ids_including_children($status_id) {
     return $status_ids;
 }
 
+/**
+ * Organize projects into hierarchical structure
+ * @param array $projects Flat array of projects with parent_id
+ * @return array Hierarchically organized projects (parents with children nested)
+ */
+function organize_projects_hierarchy($projects) {
+    $organized = array();
+    $projects_by_id = array();
+    $children_by_parent_id = array();
+
+    // Index all projects by ID and group children
+    foreach ($projects as $project) {
+        $project_id = $project['member_id'];
+        $parent_id = $project['parent_id'];
+
+        $projects_by_id[$project_id] = $project;
+
+        if ($parent_id) {
+            if (!isset($children_by_parent_id[$parent_id])) {
+                $children_by_parent_id[$parent_id] = array();
+            }
+            $children_by_parent_id[$parent_id][] = $project_id;
+        }
+    }
+
+    // Build hierarchical structure: parents first, then their children
+    foreach ($projects as $project) {
+        $project_id = $project['member_id'];
+        $parent_id = $project['parent_id'];
+
+        // Only process root-level projects here (no parent or parent not in result set)
+        if (!$parent_id || !isset($projects_by_id[$parent_id])) {
+            // Add the parent
+            $organized[] = $project;
+
+            // Add its children immediately after
+            if (isset($children_by_parent_id[$project_id])) {
+                foreach ($children_by_parent_id[$project_id] as $child_id) {
+                    $child = $projects_by_id[$child_id];
+                    $child['is_child'] = true; // Mark as child for indentation
+                    $organized[] = $child;
+                }
+            }
+        }
+    }
+
+    return $organized;
+}
+
 function get_main_project_status_changes_report_data($report_data) {
     $project_ot = ObjectTypes::instance()->findOne(array('conditions' => "`name` = 'project'"));
     $project_ot_id = $project_ot->getId();
@@ -60,13 +109,13 @@ function get_main_project_status_changes_report_data($report_data) {
 
     // Get all status IDs including children for to_status
     $to_status_ids = get_status_ids_including_children($to_status);
-    
+
     // from status is empty (0 or null), it means 'any'
     $from_status_condition = "1=1"; // Means 'ANY' previous status
-    
+
     if ($from_status) {
-        $from_status_ids = get_status_ids_including_children($from_status); 
-        
+        $from_status_ids = get_status_ids_including_children($from_status);
+
         if (!empty($from_status_ids)) {
             $from_status_condition = " sc.previous_status_id IN (" . implode(',', $from_status_ids) . ")";
         } else {
@@ -96,7 +145,7 @@ function get_main_project_status_changes_report_data($report_data) {
             FROM
                 " . TABLE_PREFIX . "member_history mh
             WHERE
-                mh.property = " . DB::escape($association_id) . " 
+                mh.property = " . DB::escape($association_id) . "
                 AND mh.created_on <= " . DB::escape($sql_end_date) . "
         ),
 
@@ -110,7 +159,7 @@ function get_main_project_status_changes_report_data($report_data) {
                 StatusChangesWithPrevious sc
             WHERE
                 sc.created_on BETWEEN " . DB::escape($sql_st_date) . " AND " . DB::escape($sql_end_date) . "
-                AND sc.current_status_id IN (" . implode(',', $to_status_ids) . ") 
+                AND sc.current_status_id IN (" . implode(',', $to_status_ids) . ")
                 AND " . $from_status_condition . "
         ),
 
@@ -142,31 +191,32 @@ function get_main_project_status_changes_report_data($report_data) {
 
         SELECT
             m.id AS member_id,
+            m.parent_member_id AS parent_id,
             m.display_name AS project_name,
             rt.created_on AS change_date,
-            
+
             rt.current_status_id AS current_stage_id,
             status_name_current.display_name AS current_phase_name,
-            
+
             rt.previous_status_id AS previous_stage_id,
             status_name_prev.display_name AS previous_phase_name,
             mt.estimated_overall_total_price AS estimated_price,
             pm_member.display_name AS project_manager_name
         FROM
             RankedTransitions rt
-        
+
         JOIN
             AbsoluteLastStatus als ON rt.member_id = als.member_id
-        
+
         JOIN
             " . TABLE_PREFIX . "members m ON rt.member_id = m.id
-        LEFT JOIN 
-            " . TABLE_PREFIX . "member_property_members AS pm_prop ON pm_prop.association_id = " . DB::escape($proj_manager_association_id) . " 
+        LEFT JOIN
+            " . TABLE_PREFIX . "member_property_members AS pm_prop ON pm_prop.association_id = " . DB::escape($proj_manager_association_id) . "
             AND pm_prop.member_id = m.id
-        LEFT JOIN 
+        LEFT JOIN
             " . TABLE_PREFIX . "members AS pm_member ON pm_member.id = pm_prop.property_member_id
         LEFT JOIN
-            " . TABLE_PREFIX . "member_totals mt ON m.id = mt.member_id 
+            " . TABLE_PREFIX . "member_totals mt ON m.id = mt.member_id
         JOIN
             " . TABLE_PREFIX . "members status_name_current ON rt.current_status_id = status_name_current.id
         LEFT JOIN
@@ -175,9 +225,10 @@ function get_main_project_status_changes_report_data($report_data) {
             rt.rn = 1  -- Last transition
             AND als.rn = 1 -- Absolute final status
             AND als.current_status_id IN (" . implode(',', $to_status_ids) . ")
-            
+
         GROUP BY
             m.id,
+            m.parent_member_id,
             m.display_name,
             rt.created_on,
             rt.current_status_id,
@@ -195,19 +246,27 @@ function get_main_project_status_changes_report_data($report_data) {
         return $result_data;
     }
 
-    // Process each project
+    // Process each project and build flat array with hierarchy info
+    $projects = array();
     foreach ($rows as $row) {
-        $project_data = array();
-        $project_data['change_date'] = $row['change_date'];
-        $project_data['project_name'] = $row['project_name'];
-        $project_data['project_manager'] = !empty($row['project_manager_name']) ? $row['project_manager_name'] : '--';
-        $project_data['previous_stage'] = !empty($row['previous_phase_name']) ? $row['previous_phase_name'] : '--';
-        $project_data['current_stage'] = !empty($row['current_phase_name']) ? $row['current_phase_name'] : '--';
-        $project_data['estimated_price'] = floatval(array_var($row, 'estimated_price', 0));
+        $project_data = array(
+            'member_id' => $row['member_id'],
+            'parent_id' => $row['parent_id'],
+            'change_date' => $row['change_date'],
+            'project_name' => $row['project_name'],
+            'project_manager' => !empty($row['project_manager_name']) ? $row['project_manager_name'] : '--',
+            'previous_stage' => !empty($row['previous_phase_name']) ? $row['previous_phase_name'] : '--',
+            'current_stage' => !empty($row['current_phase_name']) ? $row['current_phase_name'] : '--',
+            'estimated_price' => floatval(array_var($row, 'estimated_price', 0)),
+            'is_child' => false
+        );
 
-        $result_data['projects'][] = $project_data;
+        $projects[] = $project_data;
         $result_data['totals']['total_count']++;
     }
+
+    // Organize projects hierarchically
+    $result_data['projects'] = organize_projects_hierarchy($projects);
 
     return $result_data;
 }
