@@ -111,7 +111,13 @@ function render_project_rows($projects, $columns, $currency_sym) {
             $row_class .= ' contextParent';
         }
 
-        echo '<tr class="'.$row_class.'">';
+        // Add background color to parent rows
+        $row_style = '';
+        if (!$is_child) {
+            $row_style = ' style="background-color: #21867a; color: white;"';
+        }
+
+        echo '<tr class="'.$row_class.'"'.$row_style.'>';
 
         $is_first_column = true;
         foreach($columns as $col) {
