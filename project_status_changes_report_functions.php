@@ -255,10 +255,10 @@ function get_main_project_status_changes_report_data($report_data) {
         $from_status_ids = get_status_ids_including_children($from_status);
 
         if (!empty($from_status_ids)) {
-            // Include both actual transitions from the specified status AND new projects
-            // that got this status as their initial status (previous_status_id IS NULL)
-            $from_status_condition = " (sc.previous_status_id IN (" . implode(',', $from_status_ids) . ")
-                                       OR (sc.previous_status_id IS NULL AND sc.current_status_id IN (" . implode(',', $from_status_ids) . ")))";
+            // Only include transitions that came FROM the specified status
+            // Note: If we want to include new projects (NULL -> Status),
+            // the from_status filter should not be set (meaning "from ANY status")
+            $from_status_condition = " sc.previous_status_id IN (" . implode(',', $from_status_ids) . ")";
         } else {
             $from_status_condition = "1=0"; // No rows will match
         }
