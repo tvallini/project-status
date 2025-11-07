@@ -32,7 +32,8 @@ function get_main_project_status_changes_report_data($report_data) {
     $result_data = array(
         'projects' => array(),
         'totals' => array(
-            'total_count' => 0
+            'total_count' => 0,
+            'total_estimated_price' => 0
         )
     );
 
@@ -63,12 +64,15 @@ function get_main_project_status_changes_report_data($report_data) {
     
     // from status is empty (0 or null), it means 'any'
     $from_status_condition = "1=1"; // Means 'ANY' previous status
-    
+
     if ($from_status) {
-        $from_status_ids = get_status_ids_including_children($from_status); 
-        
+        $from_status_ids = get_status_ids_including_children($from_status);
+
         if (!empty($from_status_ids)) {
-            $from_status_condition = " sc.previous_status_id IN (" . implode(',', $from_status_ids) . ")";
+            // Include both actual transitions from the specified status AND new projects
+            // that got this status as their initial status (previous_status_id IS NULL)
+            $from_status_condition = " (sc.previous_status_id IN (" . implode(',', $from_status_ids) . ")
+                                       OR (sc.previous_status_id IS NULL AND sc.current_status_id IN (" . implode(',', $from_status_ids) . ")))";
         } else {
             $from_status_condition = "1=0"; // No rows will match
         }
@@ -144,14 +148,16 @@ function get_main_project_status_changes_report_data($report_data) {
             m.id AS member_id,
             m.display_name AS project_name,
             rt.created_on AS change_date,
-            
+
             rt.current_status_id AS current_stage_id,
             status_name_current.display_name AS current_phase_name,
-            
+
             rt.previous_status_id AS previous_stage_id,
             status_name_prev.display_name AS previous_phase_name,
             mt.estimated_overall_total_price AS estimated_price,
-            pm_member.display_name AS project_manager_name
+            pm_member.display_name AS project_manager_name,
+            parent_member.display_name AS located_under,
+            m.parent_member_id
         FROM
             RankedTransitions rt
         
@@ -166,7 +172,9 @@ function get_main_project_status_changes_report_data($report_data) {
         LEFT JOIN 
             " . TABLE_PREFIX . "members AS pm_member ON pm_member.id = pm_prop.property_member_id
         LEFT JOIN
-            " . TABLE_PREFIX . "member_totals mt ON m.id = mt.member_id 
+            " . TABLE_PREFIX . "member_totals mt ON m.id = mt.member_id
+        LEFT JOIN
+            " . TABLE_PREFIX . "members parent_member ON m.parent_member_id = parent_member.id
         JOIN
             " . TABLE_PREFIX . "members status_name_current ON rt.current_status_id = status_name_current.id
         LEFT JOIN
@@ -184,10 +192,12 @@ function get_main_project_status_changes_report_data($report_data) {
             status_name_current.display_name,
             rt.previous_status_id,
             status_name_prev.display_name,
-            pm_member.display_name
+            pm_member.display_name,
+            parent_member.display_name
         ORDER BY
             change_date, project_name DESC;
     ";
+
 
     $rows = DB::executeAll($sql);
 
@@ -195,18 +205,55 @@ function get_main_project_status_changes_report_data($report_data) {
         return $result_data;
     }
 
+    // Process projects data
+
     // Process each project
     foreach ($rows as $row) {
         $project_data = array();
         $project_data['change_date'] = $row['change_date'];
-        $project_data['project_name'] = $row['project_name'];
+        $member_id = $row['member_id'];
+
+        $project_name = $row['project_name'];
+        $located_under = !empty($row['located_under']) ? $row['located_under'] : '';
+        if ($located_under) {
+            $project_data['project_name'] = $project_name . '<br><i style="color: #666; font-size: 0.9em;">' . $located_under . '</i>';
+            $project_data['project_name_plain'] = $project_name . ' (' . $located_under . ')';
+        } else {
+            $project_data['project_name'] = $project_name;
+            $project_data['project_name_plain'] = $project_name;
+        }
+
         $project_data['project_manager'] = !empty($row['project_manager_name']) ? $row['project_manager_name'] : '--';
         $project_data['previous_stage'] = !empty($row['previous_phase_name']) ? $row['previous_phase_name'] : '--';
         $project_data['current_stage'] = !empty($row['current_phase_name']) ? $row['current_phase_name'] : '--';
-        $project_data['estimated_price'] = floatval(array_var($row, 'estimated_price', 0));
+
+        $estimated_price = floatval(array_var($row, 'estimated_price', 0));
+
+        // Check if this project is a parent (has children) and subtract ALL children's prices
+        $parent_member = Members::getMemberById($member_id);
+        if ($parent_member instanceof Member) {
+            $all_children_ids = $parent_member->getAllChildrenIds();
+            if (!empty($all_children_ids)) {
+                // Get the estimated prices for all children
+                $children_sql = "
+                    SELECT SUM(mt.estimated_overall_total_price) as children_total
+                    FROM " . TABLE_PREFIX . "member_totals mt
+                    WHERE mt.member_id IN (" . implode(',', $all_children_ids) . ")
+                ";
+                $children_result = DB::executeOne($children_sql);
+                if ($children_result && !empty($children_result['children_total'])) {
+                    $children_total = floatval($children_result['children_total']);
+                    // Subtract children's total from parent's price to avoid duplication
+                    $estimated_price = max(0, $estimated_price - $children_total);
+                }
+            }
+        }
+
+        $project_data['estimated_price'] = $estimated_price;
 
         $result_data['projects'][] = $project_data;
         $result_data['totals']['total_count']++;
+        $result_data['totals']['total_estimated_price'] += $project_data['estimated_price'];
     }
 
     return $result_data;

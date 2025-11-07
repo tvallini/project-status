@@ -62,7 +62,11 @@ function render_project_status_changes_report($projects, $columns, $totals, $rep
                     $align_class = 'left';
                 }
 
-                echo '<td class="'.$align_class.'">'.$value.'</td>';
+                if ($field == 'project_name') {
+                    echo '<td class="'.$align_class.'" style="line-height: 1.4;">'.$value.'</td>';
+                } else {
+                    echo '<td class="'.$align_class.'">'.$value.'</td>';
+                }
             }
             echo '</tr>';
         }
@@ -81,6 +85,9 @@ function render_project_status_changes_report($projects, $columns, $totals, $rep
             $field = $col['field'];
             if ($field == 'change_date') {
                 echo '<td class="left header_0"><strong>'.lang('total count').': '.$total_count.'</strong></td>';
+            } elseif ($field == 'estimated_price') {
+                $total_estimated_price = array_var($totals, 'total_estimated_price', 0);
+                echo '<td class="right header_0"><strong>'.format_money_amount($total_estimated_price, $currency_sym).'</strong></td>';
             } else {
                 echo '<td class="left header_0"></td>';
             }
