@@ -82,15 +82,38 @@ function fetch_parent_project_data($parent_id) {
         return null;
     }
 
+    $member_id = $row['member_id'];
+    $estimated_price = floatval(array_var($row, 'estimated_price', 0));
+
+    // Check if this project is a parent (has children) and subtract ALL children's prices
+    $parent_member = Members::getMemberById($member_id);
+    if ($parent_member instanceof Member) {
+        $all_children_ids = $parent_member->getAllChildrenIds();
+        if (!empty($all_children_ids)) {
+            // Get the estimated prices for all children
+            $children_sql = "
+                SELECT SUM(mt.estimated_overall_total_price) as children_total
+                FROM " . TABLE_PREFIX . "member_totals mt
+                WHERE mt.member_id IN (" . implode(',', $all_children_ids) . ")
+            ";
+            $children_result = DB::executeOne($children_sql);
+            if ($children_result && !empty($children_result['children_total'])) {
+                $children_total = floatval($children_result['children_total']);
+                // Subtract children's total from parent's price to avoid duplication
+                $estimated_price = max(0, $estimated_price - $children_total);
+            }
+        }
+    }
+
     return array(
-        'member_id' => $row['member_id'],
+        'member_id' => $member_id,
         'parent_id' => $row['parent_id'],
         'change_date' => '',  // No change date for parents shown for context
         'project_name' => $row['project_name'],
         'project_manager' => !empty($row['project_manager_name']) ? $row['project_manager_name'] : '--',
         'previous_stage' => '--',  // No previous stage for context parents
         'current_stage' => !empty($row['current_phase_name']) ? $row['current_phase_name'] : '--',
-        'estimated_price' => floatval(array_var($row, 'estimated_price', 0)),
+        'estimated_price' => $estimated_price,
         'is_child' => false,
         'is_context_parent' => true  // Flag to indicate this parent is shown for context
     );
@@ -195,7 +218,8 @@ function get_main_project_status_changes_report_data($report_data) {
     $result_data = array(
         'projects' => array(),
         'totals' => array(
-            'total_count' => 0
+            'total_count' => 0,
+            'total_estimated_price' => 0
         )
     );
 
@@ -231,7 +255,10 @@ function get_main_project_status_changes_report_data($report_data) {
         $from_status_ids = get_status_ids_including_children($from_status);
 
         if (!empty($from_status_ids)) {
-            $from_status_condition = " sc.previous_status_id IN (" . implode(',', $from_status_ids) . ")";
+            // Include both actual transitions from the specified status AND new projects
+            // that got this status as their initial status (previous_status_id IS NULL)
+            $from_status_condition = " (sc.previous_status_id IN (" . implode(',', $from_status_ids) . ")
+                                       OR (sc.previous_status_id IS NULL AND sc.current_status_id IN (" . implode(',', $from_status_ids) . ")))";
         } else {
             $from_status_condition = "1=0"; // No rows will match
         }
@@ -363,20 +390,44 @@ function get_main_project_status_changes_report_data($report_data) {
     // Process each project and build flat array with hierarchy info
     $projects = array();
     foreach ($rows as $row) {
+        $member_id = $row['member_id'];
+        $estimated_price = floatval(array_var($row, 'estimated_price', 0));
+
+        // Check if this project is a parent (has children) and subtract ALL children's prices
+        $parent_member = Members::getMemberById($member_id);
+        if ($parent_member instanceof Member) {
+            $all_children_ids = $parent_member->getAllChildrenIds();
+            if (!empty($all_children_ids)) {
+                // Get the estimated prices for all children
+                $children_sql = "
+                    SELECT SUM(mt.estimated_overall_total_price) as children_total
+                    FROM " . TABLE_PREFIX . "member_totals mt
+                    WHERE mt.member_id IN (" . implode(',', $all_children_ids) . ")
+                ";
+                $children_result = DB::executeOne($children_sql);
+                if ($children_result && !empty($children_result['children_total'])) {
+                    $children_total = floatval($children_result['children_total']);
+                    // Subtract children's total from parent's price to avoid duplication
+                    $estimated_price = max(0, $estimated_price - $children_total);
+                }
+            }
+        }
+
         $project_data = array(
-            'member_id' => $row['member_id'],
+            'member_id' => $member_id,
             'parent_id' => $row['parent_id'],
             'change_date' => $row['change_date'],
             'project_name' => $row['project_name'],
             'project_manager' => !empty($row['project_manager_name']) ? $row['project_manager_name'] : '--',
             'previous_stage' => !empty($row['previous_phase_name']) ? $row['previous_phase_name'] : '--',
             'current_stage' => !empty($row['current_phase_name']) ? $row['current_phase_name'] : '--',
-            'estimated_price' => floatval(array_var($row, 'estimated_price', 0)),
+            'estimated_price' => $estimated_price,
             'is_child' => false
         );
 
         $projects[] = $project_data;
         $result_data['totals']['total_count']++;
+        $result_data['totals']['total_estimated_price'] += $estimated_price;
     }
 
     // Organize projects hierarchically

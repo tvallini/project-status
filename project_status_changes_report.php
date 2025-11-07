@@ -157,8 +157,10 @@ function render_project_rows($projects, $columns, $currency_sym) {
  * @param array $totals Totals data
  */
 function render_table_totals($columns, $totals) {
+    $currency_sym = config_option('currency_code');
     echo '<tbody><tr class="titles">';
     $total_count = array_var($totals, 'total_count', 0);
+    $total_estimated_price = array_var($totals, 'total_estimated_price', 0);
 
     foreach($columns as $col) {
         if (!is_array($col) || !isset($col['field']) || !isset($col['type'])) {
@@ -167,6 +169,8 @@ function render_table_totals($columns, $totals) {
         $field = $col['field'];
         if ($field == 'change_date') {
             echo '<td class="left header_0"><strong>'.lang('total count').': '.$total_count.'</strong></td>';
+        } elseif ($field == 'estimated_price') {
+            echo '<td class="right header_0"><strong>'.format_money_amount($total_estimated_price, $currency_sym).'</strong></td>';
         } else {
             echo '<td class="left header_0"></td>';
         }
